@@ -1,0 +1,4 @@
+carrier,service_name,max_l,max_w,max_h,max_weight,price,packaging_cost,enabled,notes
+mercari,ネコポス(例),31,23,3,1000,210,0,1,料金は例。あなたが手入力で最新に更新してください。
+mercari,宅急便コンパクト(例),,,,,,70,1,専用箱代のみ例。送料はルールに合わせて設定してください。
+mercari,宅急便60(例),60,,,2000,750,0,1,料金は例。

@@ -1,0 +1,8 @@
+{
+  "fee_rate": 0.1,
+  "target_profit": 2000,
+  "default_packaging_cost": 50,
+  "db_path": "./data/app.db",
+  "kakaku_mode": "tavily",
+  "amazon_locale": "JP"
+}
