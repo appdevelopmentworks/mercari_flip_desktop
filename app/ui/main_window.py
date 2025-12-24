@@ -1,5 +1,5 @@
 from PySide6.QtCore import QThread, Qt, QUrl
-from PySide6.QtGui import QAction, QDesktopServices
+from PySide6.QtGui import QAction, QDesktopServices, QIcon
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -36,7 +36,7 @@ from app.usecases.csv_io import (
 )
 from app.usecases.estimate_shipping import ShippingInput, estimate_shipping
 from app.usecases.refresh_offers import OfferInput
-from app.ui.dialogs import ItemDialog, SettingsDialog
+from app.ui.dialogs import ItemDialog, SettingsDialog, ShippingRulesDialog
 from app.ui.workers import RefreshOffersWorker
 
 
@@ -46,11 +46,14 @@ class MainWindow(QMainWindow):
         self._repo = repo
         self._config = config
         self._refresh_thread: QThread | None = None
+        self._refresh_worker: RefreshOffersWorker | None = None
         self._selected_offer_id: int | None = None
         self._selected_shipping_cost: int = 0
 
         self.setWindowTitle("メルカリ仕入れ支援")
+        self._apply_icon()
         self.setMinimumSize(1200, 720)
+        self.resize(1820, 1170)
         self._build_menu()
         self._build_layout()
         self.statusBar().showMessage("準備完了")
@@ -58,6 +61,8 @@ class MainWindow(QMainWindow):
         self._load_items()
         self._update_shipping()
         self._update_profit()
+        self._update_controls_enabled()
+        self._show_help_on_start()
 
     def _build_menu(self) -> None:
         settings_action = QAction("設定", self)
@@ -84,6 +89,10 @@ class MainWindow(QMainWindow):
         menu = self.menuBar()
         settings_menu = menu.addMenu("設定")
         settings_menu.addAction(settings_action)
+        settings_menu.addSeparator()
+        shipping_action = QAction("送料テーブル編集", self)
+        shipping_action.triggered.connect(self._open_shipping_rules)
+        settings_menu.addAction(shipping_action)
 
         csv_menu = menu.addMenu("CSV入出力")
         csv_menu.addAction(csv_import_items)
@@ -104,10 +113,13 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 3)
         splitter.setStretchFactor(2, 3)
+        splitter.setChildrenCollapsible(False)
+        splitter.setSizes([280, 720, 400])
 
         container = QWidget()
         layout = QHBoxLayout(container)
-        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
         layout.addWidget(splitter)
         self.setCentralWidget(container)
 
@@ -117,6 +129,7 @@ class MainWindow(QMainWindow):
 
         self._search = QLineEdit()
         self._search.setPlaceholderText("商品検索")
+        self._search.setToolTip("商品名または検索キーワードで絞り込みます。")
         self._search.textChanged.connect(self._load_items)
         layout.addWidget(self._search)
 
@@ -136,15 +149,18 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._item_list)
 
         actions = QHBoxLayout()
-        add_btn = QPushButton("追加")
-        edit_btn = QPushButton("編集")
-        delete_btn = QPushButton("削除")
-        add_btn.clicked.connect(self._add_item)
-        edit_btn.clicked.connect(self._edit_item)
-        delete_btn.clicked.connect(self._delete_item)
-        actions.addWidget(add_btn)
-        actions.addWidget(edit_btn)
-        actions.addWidget(delete_btn)
+        self._add_btn = QPushButton("追加")
+        self._edit_btn = QPushButton("編集")
+        self._delete_btn = QPushButton("削除")
+        self._add_btn.setToolTip("商品を追加します。")
+        self._edit_btn.setToolTip("選択中の商品を編集します。")
+        self._delete_btn.setToolTip("選択中の商品を削除します。")
+        self._add_btn.clicked.connect(self._add_item)
+        self._edit_btn.clicked.connect(self._edit_item)
+        self._delete_btn.clicked.connect(self._delete_item)
+        actions.addWidget(self._add_btn)
+        actions.addWidget(self._edit_btn)
+        actions.addWidget(self._delete_btn)
         layout.addLayout(actions)
 
         return pane
@@ -155,6 +171,7 @@ class MainWindow(QMainWindow):
 
         controls = QHBoxLayout()
         self._refresh_btn = QPushButton("候補更新")
+        self._refresh_btn.setToolTip("選択中の商品で候補取得を実行します。")
         self._refresh_btn.clicked.connect(self._refresh_offers)
         controls.addWidget(self._refresh_btn)
         controls.addStretch()
@@ -176,6 +193,8 @@ class MainWindow(QMainWindow):
         self._offers_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._offers_table.setSelectionBehavior(QTableWidget.SelectRows)
         self._offers_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._offers_table.horizontalHeader().setStretchLastSection(True)
+        self._offers_table.setAlternatingRowColors(True)
         self._offers_table.itemSelectionChanged.connect(self._on_offer_selected)
         layout.addWidget(self._offers_table)
 
@@ -186,12 +205,23 @@ class MainWindow(QMainWindow):
         layout = pane.layout()
 
         shipping_box = QGroupBox("配送入力")
+        shipping_box.setObjectName("card")
         shipping_layout = QFormLayout(shipping_box)
-        self._length = self._int_spin()
-        self._width = self._int_spin()
-        self._height = self._int_spin()
-        self._weight = self._int_spin()
-        self._packaging = self._int_spin()
+        self._length = self._int_spin(suffix=" cm")
+        self._width = self._int_spin(suffix=" cm")
+        self._height = self._int_spin(suffix=" cm")
+        self._weight = self._int_spin(suffix=" g")
+        self._packaging = self._int_spin(suffix=" 円")
+        self._length.setMaximum(200)
+        self._width.setMaximum(200)
+        self._height.setMaximum(200)
+        self._weight.setMaximum(30000)
+        self._packaging.setMaximum(10000)
+        self._length.setToolTip("上限: 200 cm")
+        self._width.setToolTip("上限: 200 cm")
+        self._height.setToolTip("上限: 200 cm")
+        self._weight.setToolTip("上限: 30000 g")
+        self._packaging.setToolTip("上限: 10000 円")
         self._packaging.setValue(self._config.default_packaging_cost)
         shipping_layout.addRow("縦 (cm)", self._length)
         shipping_layout.addRow("横 (cm)", self._width)
@@ -206,15 +236,22 @@ class MainWindow(QMainWindow):
         )
         self._shipping_table.setSelectionBehavior(QTableWidget.SelectRows)
         self._shipping_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._shipping_table.horizontalHeader().setStretchLastSection(True)
+        self._shipping_table.setAlternatingRowColors(True)
         self._shipping_table.itemSelectionChanged.connect(self._on_shipping_selected)
         layout.addWidget(self._shipping_table)
 
         market_box = QGroupBox("相場")
+        market_box.setObjectName("card")
         market_layout = QFormLayout(market_box)
-        self._market_low = self._int_spin()
-        self._market_mid = self._int_spin()
-        self._market_high = self._int_spin()
+        self._market_low = self._int_spin(suffix=" 円")
+        self._market_mid = self._int_spin(suffix=" 円")
+        self._market_high = self._int_spin(suffix=" 円")
+        for field in [self._market_low, self._market_mid, self._market_high]:
+            field.setMaximum(10000000)
+            field.setToolTip("上限: 10,000,000 円")
         self._market_memo = QTextEdit()
+        self._market_memo.setPlaceholderText("相場の根拠や補足を記録")
         market_layout.addRow("安値", self._market_low)
         market_layout.addRow("中央値", self._market_mid)
         market_layout.addRow("高値", self._market_high)
@@ -222,12 +259,17 @@ class MainWindow(QMainWindow):
         layout.addWidget(market_box)
 
         profit_box = QGroupBox("利益")
+        profit_box.setObjectName("card")
         profit_layout = QFormLayout(profit_box)
-        self._sale_price = self._int_spin()
-        self._cost_price = self._int_spin()
-        self._fee_rate = self._int_spin()
+        self._sale_price = self._int_spin(suffix=" 円")
+        self._cost_price = self._int_spin(suffix=" 円")
+        self._fee_rate = self._int_spin(suffix=" %")
         self._fee_rate.setRange(0, 100)
         self._fee_rate.setValue(int(self._config.fee_rate * 100))
+        self._sale_price.setMaximum(10000000)
+        self._cost_price.setMaximum(10000000)
+        self._sale_price.setToolTip("上限: 10,000,000 円")
+        self._cost_price.setToolTip("上限: 10,000,000 円")
         self._profit_label = QLabel("-")
         self._profit_rate_label = QLabel("-")
         self._breakeven_label = QLabel("-")
@@ -242,6 +284,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(profit_box)
 
         self._save_calc_btn = QPushButton("計算結果を保存")
+        self._save_calc_btn.setToolTip("現在の計算結果と相場を保存します。")
         self._save_calc_btn.clicked.connect(self._save_calculation)
         layout.addWidget(self._save_calc_btn)
         layout.addStretch()
@@ -258,6 +301,21 @@ class MainWindow(QMainWindow):
         for spin in [self._sale_price, self._cost_price, self._fee_rate]:
             spin.valueChanged.connect(self._update_profit)
 
+        for spin in [
+            self._length,
+            self._width,
+            self._height,
+            self._weight,
+            self._packaging,
+            self._market_low,
+            self._market_mid,
+            self._market_high,
+            self._sale_price,
+            self._cost_price,
+            self._fee_rate,
+        ]:
+            self._auto_reset_spinbox(spin)
+
         return pane
 
     def _panel(self, title: str) -> QFrame:
@@ -266,24 +324,47 @@ class MainWindow(QMainWindow):
         frame_layout = QVBoxLayout(frame)
         frame_layout.setContentsMargins(12, 12, 12, 12)
         frame_layout.setSpacing(10)
-        frame_layout.addWidget(QLabel(title))
+        header = QLabel(title)
+        header.setObjectName("panelTitle")
+        frame_layout.addWidget(header)
         return frame
 
-    def _int_spin(self) -> QSpinBox:
+    def _int_spin(self, *, suffix: str = "") -> QSpinBox:
         box = QSpinBox()
         box.setRange(0, 1_000_000)
+        if suffix:
+            box.setSuffix(suffix)
         return box
 
     def _apply_style(self) -> None:
         self.setStyleSheet(
             """
             QMainWindow {
-                background: #f5f7fb;
+                background: #f3f5f9;
+                font-family: "Yu Gothic UI", "Meiryo", "Segoe UI", sans-serif;
             }
             QFrame#panel {
                 background: #ffffff;
                 border: 1px solid #e2e6ef;
                 border-radius: 10px;
+            }
+            QGroupBox#card {
+                background: #fbfdff;
+                border: 1px solid #e5e9f5;
+                border-radius: 10px;
+                margin-top: 6px;
+            }
+            QGroupBox#card::title {
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 4px;
+                color: #1f2937;
+                font-weight: 600;
+            }
+            QLabel#panelTitle {
+                font-size: 14px;
+                font-weight: 700;
+                color: #111827;
             }
             QLabel[emphasis="true"] {
                 font-weight: 600;
@@ -294,6 +375,17 @@ class MainWindow(QMainWindow):
                 border: 1px solid #e2e6ef;
                 border-radius: 6px;
                 padding: 6px;
+            }
+            QLineEdit[warning="true"], QSpinBox[warning="true"] {
+                border: 1px solid #ef4444;
+                background: #fff5f5;
+            }
+            QHeaderView::section {
+                background: #eef2ff;
+                color: #1f2937;
+                padding: 6px;
+                border: none;
+                font-weight: 600;
             }
             QPushButton {
                 background: #2563eb;
@@ -308,10 +400,15 @@ class MainWindow(QMainWindow):
             """
         )
 
+    def _apply_icon(self) -> None:
+        icon_path = QIcon("docs/Appico.png")
+        if not icon_path.isNull():
+            self.setWindowIcon(icon_path)
+
     def _load_items(self) -> None:
         self._item_list.clear()
         query = self._search.text().strip().lower()
-        status = self._status_filter.currentData()
+        status = self._status_filter.currentData() or "all"
         for item in self._repo.list_items():
             if status != "all" and item.status != status:
                 continue
@@ -321,6 +418,11 @@ class MainWindow(QMainWindow):
             list_item = QListWidgetItem(label)
             list_item.setData(Qt.UserRole, item.id)
             self._item_list.addItem(list_item)
+        if self._item_list.count() > 0 and not self._item_list.currentItem():
+            self._item_list.setCurrentRow(0)
+        if self._item_list.count() == 0:
+            self.statusBar().showMessage("商品がありません。左下の「追加」から登録してください。")
+        self._update_controls_enabled()
 
     def _current_item_id(self) -> int | None:
         current = self._item_list.currentItem()
@@ -328,13 +430,21 @@ class MainWindow(QMainWindow):
             return None
         return int(current.data(Qt.UserRole))
 
+    def _update_controls_enabled(self) -> None:
+        has_item = self._current_item_id() is not None
+        self._refresh_btn.setEnabled(has_item)
+        self._edit_btn.setEnabled(has_item)
+        self._delete_btn.setEnabled(has_item)
+        self._save_calc_btn.setEnabled(has_item)
+        self._offers_table.setEnabled(has_item)
+
     def _add_item(self) -> None:
         dialog = ItemDialog(self, title="商品追加")
         if dialog.exec() != ItemDialog.Accepted:
             return
         values = dialog.values()
         if not values["search_keyword"]:
-            QMessageBox.warning(self, "入力確認", "検索キーワードは必須です。")
+            QMessageBox.warning(self, "入力確認", "検索キーワードか商品名を入力してください。")
             return
         self._repo.create_item(**values)
         self._load_items()
@@ -363,7 +473,7 @@ class MainWindow(QMainWindow):
             return
         values = dialog.values()
         if not values["search_keyword"]:
-            QMessageBox.warning(self, "入力確認", "検索キーワードは必須です。")
+            QMessageBox.warning(self, "入力確認", "検索キーワードか商品名を入力してください。")
             return
         self._repo.update_item(item_id=item_id, **values)
         self._load_items()
@@ -389,6 +499,7 @@ class MainWindow(QMainWindow):
         self._selected_offer_id = None
         self._load_offers()
         self._load_market()
+        self._update_controls_enabled()
 
     def _load_offers(self) -> None:
         item_id = self._current_item_id()
@@ -435,6 +546,11 @@ class MainWindow(QMainWindow):
         self._best_label.setText(
             f"最安: {best_total}" if best_total is not None else "最安: -"
         )
+        if not offers:
+            self.statusBar().showMessage("候補がありません。候補更新を実行してください。")
+            self._cost_price.setValue(0)
+            self._selected_offer_id = None
+            self._update_profit()
 
     def _load_market(self) -> None:
         item_id = self._current_item_id()
@@ -458,36 +574,43 @@ class MainWindow(QMainWindow):
         if item_id is None:
             QMessageBox.information(self, "商品選択", "商品を選択してください。")
             return
+        if self._refresh_thread and self._refresh_thread.isRunning():
+            return
         item = self._repo.get_item(item_id)
         if not item:
             return
         request = OfferInput(item_id=item.id, search_keyword=item.search_keyword)
 
-        worker = RefreshOffersWorker(self._repo, request)
-        thread = QThread(self)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.finished.connect(self._refresh_done)
-        worker.failed.connect(self._refresh_failed)
-        worker.finished.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        self._refresh_thread = thread
+        self._refresh_worker = RefreshOffersWorker(
+            self._config.db_path, request
+        )
+        self._refresh_thread = QThread(self)
+        self._refresh_worker.moveToThread(self._refresh_thread)
+        self._refresh_thread.started.connect(self._refresh_worker.run)
+        self._refresh_worker.finished.connect(self._refresh_done)
+        self._refresh_worker.failed.connect(self._refresh_failed)
+        self._refresh_worker.finished.connect(self._refresh_thread.quit)
+        self._refresh_worker.failed.connect(self._refresh_thread.quit)
+        self._refresh_thread.finished.connect(self._refresh_worker.deleteLater)
+        self._refresh_thread.finished.connect(self._refresh_thread.deleteLater)
 
         self._refresh_btn.setEnabled(False)
         self.statusBar().showMessage("候補取得中...")
-        thread.start()
+        self._refresh_thread.start()
 
     def _refresh_done(self, count: int) -> None:
         self._refresh_btn.setEnabled(True)
         self.statusBar().showMessage(f"候補取得完了: {count} 件")
         self._load_offers()
+        self._refresh_worker = None
+        self._refresh_thread = None
 
     def _refresh_failed(self, message: str) -> None:
         self._refresh_btn.setEnabled(True)
         QMessageBox.warning(self, "取得失敗", message)
         self.statusBar().showMessage("取得失敗")
+        self._refresh_worker = None
+        self._refresh_thread = None
 
     def _on_offer_selected(self) -> None:
         selected = self._offers_table.currentRow()
@@ -515,10 +638,49 @@ class MainWindow(QMainWindow):
             weight=self._weight.value(),
             packaging_cost=self._packaging.value(),
         )
+        self._clear_shipping_warnings()
+        missing_fields = []
+        dims = [self._length.value(), self._width.value(), self._height.value()]
+        has_any_dim = any(value > 0 for value in dims)
+        if has_any_dim and 0 in dims:
+            if self._length.value() == 0:
+                missing_fields.append(self._length)
+            if self._width.value() == 0:
+                missing_fields.append(self._width)
+            if self._height.value() == 0:
+                missing_fields.append(self._height)
+        if has_any_dim and self._weight.value() == 0:
+            missing_fields.append(self._weight)
+        if self._weight.value() > 0 and not has_any_dim:
+            missing_fields.extend([self._length, self._width, self._height])
+
+        if missing_fields:
+            for field in missing_fields:
+                self._mark_warning(field)
+            self.statusBar().showMessage(
+                "配送条件が未入力です。寸法と重量を入力してください。"
+            )
+
+        if (
+            self._length.value() == 0
+            and self._width.value() == 0
+            and self._height.value() == 0
+            and self._weight.value() == 0
+        ):
+            self.statusBar().showMessage(
+                "配送条件が未入力です。寸法や重量を入力してください。"
+            )
         rules = self._repo.list_shipping_rules()
         estimates = estimate_shipping(rules, data)
         self._shipping_table.setRowCount(0)
         self._selected_shipping_cost = 0
+        if not estimates:
+            self._shipping_table.insertRow(0)
+            self._shipping_table.setItem(0, 0, QTableWidgetItem("送料ルール未設定"))
+            self._shipping_table.setItem(0, 1, QTableWidgetItem("-"))
+            self._shipping_table.setItem(0, 2, QTableWidgetItem("-"))
+            self._update_profit()
+            return
         for estimate in estimates:
             row = self._shipping_table.rowCount()
             self._shipping_table.insertRow(row)
@@ -545,6 +707,13 @@ class MainWindow(QMainWindow):
             self._update_profit()
 
     def _update_profit(self) -> None:
+        self._clear_warnings([self._sale_price, self._cost_price, self._fee_rate])
+        if self._sale_price.value() <= 0:
+            self._mark_warning(self._sale_price)
+        if self._cost_price.value() <= 0:
+            self._mark_warning(self._cost_price)
+        if self._fee_rate.value() <= 0:
+            self._mark_warning(self._fee_rate)
         shipping_cost = max(0, self._selected_shipping_cost - self._packaging.value())
         result = calc_profit(
             sale_price=self._sale_price.value(),
@@ -568,6 +737,12 @@ class MainWindow(QMainWindow):
         item_id = self._current_item_id()
         if item_id is None:
             QMessageBox.information(self, "商品選択", "商品を選択してください。")
+            return
+        if self._sale_price.value() <= 0:
+            QMessageBox.warning(self, "入力確認", "想定売価を入力してください。")
+            return
+        if self._cost_price.value() <= 0:
+            QMessageBox.warning(self, "入力確認", "原価を入力してください。")
             return
         shipping_cost = max(0, self._selected_shipping_cost - self._packaging.value())
         result = calc_profit(
@@ -616,6 +791,12 @@ class MainWindow(QMainWindow):
         if dialog.exec() == SettingsDialog.Accepted:
             self._fee_rate.setValue(int(self._config.fee_rate * 100))
             self._packaging.setValue(self._config.default_packaging_cost)
+            self._update_shipping()
+
+    def _open_shipping_rules(self) -> None:
+        dialog = ShippingRulesDialog(self, repo=self._repo)
+        if dialog.exec() == ShippingRulesDialog.Accepted:
+            self._update_shipping()
 
     def _import_items_csv(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -677,3 +858,40 @@ class MainWindow(QMainWindow):
 
     def _open_logs_folder(self) -> None:
         QDesktopServices.openUrl(QUrl.fromLocalFile("logs"))
+
+    def _auto_reset_spinbox(self, spinbox: QSpinBox) -> None:
+        spinbox.editingFinished.connect(
+            lambda box=spinbox: self._reset_if_empty(box)
+        )
+
+    def _reset_if_empty(self, spinbox: QSpinBox) -> None:
+        text = spinbox.lineEdit().text().strip()
+        suffix = spinbox.suffix()
+        if suffix:
+            text = text.replace(suffix, "").strip()
+        if text == "":
+            spinbox.setValue(0)
+
+    def _mark_warning(self, widget: QWidget) -> None:
+        widget.setProperty("warning", "true")
+        widget.style().unpolish(widget)
+        widget.style().polish(widget)
+
+    def _clear_warnings(self, widgets: list[QWidget]) -> None:
+        for widget in widgets:
+            widget.setProperty("warning", "false")
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+
+    def _clear_shipping_warnings(self) -> None:
+        self._clear_warnings(
+            [self._length, self._width, self._height, self._weight]
+        )
+
+    def _show_help_on_start(self) -> None:
+        if self._item_list.count() == 0:
+            QMessageBox.information(
+                self,
+                "はじめに",
+                "商品を追加して、候補更新を実行すると仕入れ候補が表示されます。",
+            )

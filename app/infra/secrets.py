@@ -23,4 +23,8 @@ def set_secret(key: str, value: str) -> None:
 
 def delete_secret(key: str) -> None:
     keyring = _require_keyring()
-    keyring.delete_password(SERVICE_NAME, key)
+    try:
+        keyring.delete_password(SERVICE_NAME, key)
+    except Exception:
+        # Ignore if not present or backend rejects deletion.
+        return

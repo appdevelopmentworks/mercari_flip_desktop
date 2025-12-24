@@ -18,6 +18,7 @@ class ItemDialog(QDialog):
 
         self._name = QLineEdit()
         self._search = QLineEdit()
+        self._search.setPlaceholderText("未入力なら商品名を使用します")
         self._jan = QLineEdit()
         self._model = QLineEdit()
         self._category = QLineEdit()
@@ -59,9 +60,13 @@ class ItemDialog(QDialog):
         layout.addWidget(buttons)
 
     def values(self) -> dict:
+        name = self._name.text().strip()
+        search = self._search.text().strip()
+        if not search:
+            search = name
         return {
-            "name": self._name.text().strip() or None,
-            "search_keyword": self._search.text().strip(),
+            "name": name or None,
+            "search_keyword": search,
             "jan": self._jan.text().strip() or None,
             "model_number": self._model.text().strip() or None,
             "category": self._category.text().strip() or None,

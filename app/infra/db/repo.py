@@ -301,6 +301,38 @@ class Repository:
         ).fetchall()
         return [ShippingRule(**row) for row in rows]
 
+    def list_shipping_rules_all(self) -> list[ShippingRule]:
+        rows = self._conn.execute(
+            "SELECT * FROM shipping_rules ORDER BY id ASC"
+        ).fetchall()
+        return [ShippingRule(**row) for row in rows]
+
+    def replace_shipping_rules(self, rules: Iterable[dict]) -> None:
+        self._conn.execute("DELETE FROM shipping_rules")
+        self._conn.executemany(
+            """
+            INSERT INTO shipping_rules(
+              carrier, service_name, max_l, max_w, max_h, max_weight,
+              price, packaging_cost, enabled
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    row["carrier"],
+                    row["service_name"],
+                    row.get("max_l"),
+                    row.get("max_w"),
+                    row.get("max_h"),
+                    row.get("max_weight"),
+                    row["price"],
+                    row.get("packaging_cost", 0),
+                    row.get("enabled", 1),
+                )
+                for row in rules
+            ],
+        )
+        self._conn.commit()
+
     def list_market_refs(self, item_id: int) -> list[MarketRef]:
         rows = self._conn.execute(
             "SELECT * FROM market_refs WHERE item_id = ? ORDER BY created_at DESC",

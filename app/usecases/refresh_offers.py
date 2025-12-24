@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from app.infra.db.repo import Repository
 from app.infra.clients import amazon_paapi, rakuten, tavily, yahoo
+from app.infra.logger import setup_logging
 
 
 @dataclass(frozen=True)
@@ -14,42 +15,29 @@ class OfferInput:
 
 
 def refresh_offers(repo: Repository, request: OfferInput) -> int:
+    logger = setup_logging()
     sources = dict(repo.list_sources())
     fetched_at = datetime.now(timezone.utc).isoformat()
 
     offers = []
-    offers.extend(
-        _normalize_offers(
-            rakuten.search_offers(request.search_keyword),
-            request.item_id,
-            sources.get("rakuten"),
-            fetched_at,
-        )
-    )
-    offers.extend(
-        _normalize_offers(
-            yahoo.search_offers(request.search_keyword),
-            request.item_id,
-            sources.get("yahoo"),
-            fetched_at,
-        )
-    )
-    offers.extend(
-        _normalize_offers(
-            amazon_paapi.search_offers(request.search_keyword),
-            request.item_id,
-            sources.get("amazon"),
-            fetched_at,
-        )
-    )
-    offers.extend(
-        _normalize_offers(
-            tavily.search_offers(request.search_keyword),
-            request.item_id,
-            sources.get("tavily"),
-            fetched_at,
-        )
-    )
+    for name, func in [
+        ("rakuten", rakuten.search_offers),
+        ("yahoo", yahoo.search_offers),
+        ("amazon", amazon_paapi.search_offers),
+        ("tavily", tavily.search_offers),
+    ]:
+        try:
+            raw = func(request.search_keyword)
+            offers.extend(
+                _normalize_offers(
+                    raw,
+                    request.item_id,
+                    sources.get(name),
+                    fetched_at,
+                )
+            )
+        except Exception as exc:  # pragma: no cover - network path
+            logger.warning("offer refresh failed: %s (%s)", name, exc)
 
     repo.add_offers(offers)
     return len(offers)
